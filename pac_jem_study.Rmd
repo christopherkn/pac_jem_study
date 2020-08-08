@@ -1,0 +1,298 @@
+---
+title: "pac_jem_study"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = F, warning = F)
+
+
+library(tidyverse)
+library(readxl)
+library(kableExtra) # for pretty tables
+
+data <- read_excel("~/Box/PAC_JUVE/JEM/PRA documents/all_county_data_from_2019_PRAs.xlsx")
+
+# transform data to numeric
+data[, 9:44] <- sapply(data[, 9:44], as.double) # <- IF YOU INSERT COLUMNS BEFORE READING THE DATA THIS WILL BREAK BECAUSE THE ARGUMENTS ARE POSITIONAL, NOT NAMED
+
+
+# create function for creating nice tables
+tabl <- function(tble) {
+  kable(tble) %>%
+  kable_styling(font_size = 10,
+                full_width = F)
+}
+
+```
+
+
+```{r}
+wide <- data %>%
+  filter(use == "yes") %>% # select only data we've chosen to use
+  select(year, what, county, pop, pop_rank, charged_for_em_2017, total) %>% # select only relevent columns
+  pivot_wider(names_from = what, values_from = total) %>% # make em/petition columns instead of rows, so each row is a county-year
+  mutate(em_rate = em/petitions) # calculate the EM utilization rate for each county-year
+```
+
+For a difference-in-difference analysis to be valid, there must be parallel trends prior to the intervention. Difference in difference design assumes that the treatment and control groups were going along the same trajectory before the intervention. Every force that acts on the treatment group has an equal effect on the treatment group. So when the treatment group increases or decreases, so does the control. The change in the control group after the intervention shows what kind of change you would have expected the treatment group to see, had the treatment not occurred.  
+
+The calculation of the “difference in the differences” only works if you can demonstrate parallel trends prior to the intervention. Otherwise there is/are other forces that act differently between the two groups. Those other forces may be accounting for the difference between the groups before and after the intervention, and therefore your calculation of the “difference in differences” won’t actually measure the impact of the intervention (elimination of fees) but several things which are impossible to untangle from each other (the elimination of fees and all the other forces that result in lack of parallel trends).
+
+Any analyses that do not demonstrate parallel trends prior to the intervention should be considered invalid.
+__Because this document is built to change as more data is added, know that if the plots do not demonstrate
+parallel trends, the calculations shown and conclusions drawn are not valid__
+
+
+```{r}
+diff1 <- wide %>%
+  select(county, year, em_rate, charged_for_em_2017, pop) %>%
+  filter(year == 2017 | year == 2018) %>%
+  pivot_wider(names_from = year, 
+              values_from = em_rate,
+              names_prefix = "y") %>%
+  mutate(diff = y2018 - y2017) %>%
+  # select(-y2018, -y2017) %>%
+  group_by(charged_for_em_2017) %>%
+  mutate(weight = pop/sum(pop)) # create weight based on population
+```
+
+
+
+
+### Difference in difference results:
+#### (EM rate mean, weighted by population)  
+
+
+```{r}
+avg <- wide %>%
+  select(-em, -petitions) %>%
+  pivot_wider(names_from = year,
+              values_from = em_rate,
+              names_prefix = "em_rate_") %>%
+  group_by(charged_for_em_2017) %>%
+  mutate(weight = pop/sum(pop)) %>%
+  select(county, pop, weight, everything()) %>%
+  summarise(em_rate_2014 = weighted.mean(em_rate_2014, weight, na.rm = T),
+            em_rate_2015 = weighted.mean(em_rate_2015, weight, na.rm = T),
+            em_rate_2016 = weighted.mean(em_rate_2016, weight, na.rm = T),
+            em_rate_2017 = weighted.mean(em_rate_2017, weight, na.rm = T),
+            em_rate_2018 = weighted.mean(em_rate_2018, weight, na.rm = T),
+            em_rate_2019 = weighted.mean(em_rate_2019, weight, na.rm = T)
+            ) %>%
+  pivot_longer(-charged_for_em_2017, 
+               names_prefix = "em_rate_",
+               names_to = "year",
+               values_to = "em_rate") %>%
+  mutate(county = case_when(charged_for_em_2017 == "no" ~ "weighted_average_no_fee",
+                               TRUE ~ "weighted_average_with_fee")) %>%
+  mutate(year = as.numeric(year)) %>%
+  select(year, county, charged_for_em_2017, em_rate)
+```
+
+
+```{r}
+# function to create a plot we want to repeat many times:
+ddplot <- function(dta) {
+  ggplot(data=dta, aes(x=year, y=em_rate, group=charged_for_em_2017)) +
+  geom_line(aes(color = charged_for_em_2017))+
+  geom_point(aes(color = charged_for_em_2017)) +
+  scale_color_manual(values=c("#66a182","#edae49"))+
+  geom_text(aes(label = round(em_rate, 2),
+                vjust = -1.5),
+                color = "#8d96a3") +
+  geom_vline(xintercept = 2017.5) + 
+  annotate(geom="text", 
+           x=2016.5, y=0.75, color="red",
+           label="Before elimination \n of fees") + 
+  annotate(geom="text", 
+           x=2018.35, y=0.75, color="red",
+           label="After elimination \n of fees") +
+  theme_light() +
+  theme(panel.border = element_blank()) + 
+  guides(color = guide_legend(reverse = TRUE)) # put "yes" on the top of the legend
+}
+```
+
+
+
+```{r}
+ddplot(avg)
+```
+
+```{r}
+difference <- diff1 %>% summarise(diff = weighted.mean(diff, weight))
+```
+
+
+The weighted mean difference after the elimination of fees for counties that charged fees was `r round(difference$diff[2]*100,1)` percentage points.  
+
+For counties that did not charge fees, the elimination of fees changed utilization of EM by `r round(difference$diff[1]*100,1)` percentage points.  
+
+Therefore, the difference in differences is `r round(difference$diff[2]*100,1)` - `r round(difference$diff[1]*100,1)` = `r round(difference$diff[2]*100,1)-round(difference$diff[1]*100,1)` percentage points.  
+
+__In this model, eliminating fees
+`r if(round(difference$diff[2]*100,1)-round(difference$diff[1]*100,1) > 0){("INCREASED")}else{("DECREASED")}`  utilization of electronic monitoring by `r round(difference$diff[2]*100,1)-round(difference$diff[1]*100,1)` percentage points.__
+
+
+```{r}
+tabl(difference)
+```
+
+
+#### Sample sizes by group and year:
+```{r}
+tabl(
+wide %>%
+  select(-em, -petitions) %>%
+  pivot_wider(names_from = year,
+              values_from = em_rate,
+              names_prefix = "em_rate_") %>%
+  group_by(charged_for_em_2017) %>%
+  mutate(weight = pop/sum(pop)) %>%
+  select(county, pop, weight, everything()) %>%
+  summarise(n_2014 = sum(!is.na(em_rate_2014)),
+            n_2015 = sum(!is.na(em_rate_2015)),
+            n_2016 = sum(!is.na(em_rate_2016)),
+            n_2017 = sum(!is.na(em_rate_2017)),
+            n_2018 = sum(!is.na(em_rate_2018)),
+            n_2019 = sum(!is.na(em_rate_2019))
+            ) %>%
+  pivot_longer(-charged_for_em_2017, 
+               names_prefix = "n_",
+               names_to = "year",
+               values_to = "n") %>%
+  mutate(county = case_when(charged_for_em_2017 == "no" ~ "weighted_average_no_fee",
+                               TRUE ~ "weighted_average_with_fee")) %>%
+  mutate(year = as.numeric(year)) %>%
+  select(year, county, charged_for_em_2017, n)
+)
+```
+
+#### Counties included for each year 
+```{r}
+kable(
+wide %>%
+  select(-em, -petitions) %>%
+  pivot_wider(names_from = year,
+              values_from = em_rate,
+              names_prefix = "em_rate_") %>%
+  group_by(charged_for_em_2017) %>%
+  mutate(weight = pop/sum(pop)) %>%
+  select(county, pop, weight, everything()) %>%
+  arrange(pop_rank) %>%
+  mutate(`2014` = case_when(is.na(em_rate_2014) ~ "--", TRUE ~ "Yes"),
+         `2015` = case_when(is.na(em_rate_2015) ~ "--", TRUE ~ "Yes"),
+         `2016` = case_when(is.na(em_rate_2016) ~ "--", TRUE ~ "Yes"),
+         `2017` = case_when(is.na(em_rate_2017) ~ "--", TRUE ~ "Yes"),
+         `2018` = case_when(is.na(em_rate_2018) ~ "--", TRUE ~ "Yes"),
+         `2019` = case_when(is.na(em_rate_2019) ~ "--", TRUE ~ "Yes")
+         ) %>%
+  select(-em_rate_2014, -em_rate_2015, -em_rate_2016, 
+         -em_rate_2017, -em_rate_2018, -em_rate_2019)
+) %>%
+  kable_styling(font_size = 10,
+                full_width = F)
+```
+
+#### Calculations county-by-county
+These numbers were then averaged using the weights shown, and plotted above.
+```{r}
+tabl(diff1)
+```
+
+
+### Same thing, but using an un-weighted mean
+
+At the time of writing, this does not show parallel trends, so any calculation / interpretation is invalid.
+```{r}
+unweighted_avg <- wide %>%
+  select(-em, -petitions) %>%
+  pivot_wider(names_from = year,
+              values_from = em_rate,
+              names_prefix = "em_rate_") %>%
+  group_by(charged_for_em_2017) %>%
+  mutate(weight = pop/sum(pop)) %>%
+  select(county, pop, weight, everything()) %>%
+  summarise(em_rate_2014 = mean(em_rate_2014, na.rm = T),
+            em_rate_2015 = mean(em_rate_2015, na.rm = T),
+            em_rate_2016 = mean(em_rate_2016, na.rm = T),
+            em_rate_2017 = mean(em_rate_2017, na.rm = T),
+            em_rate_2018 = mean(em_rate_2018, na.rm = T),
+            em_rate_2019 = mean(em_rate_2019, na.rm = T)
+            ) %>%
+  pivot_longer(-charged_for_em_2017, 
+               names_prefix = "em_rate_",
+               names_to = "year",
+               values_to = "em_rate") %>%
+  mutate(county = case_when(charged_for_em_2017 == "no" ~ "weighted_average_no_fee",
+                               TRUE ~ "weighted_average_with_fee")) %>%
+  mutate(year = as.numeric(year)) %>%
+  select(year, county, charged_for_em_2017, em_rate)
+
+ddplot(unweighted_avg)
+```
+
+
+
+### Summing all EM cases and petitions for counties that charge vs not charge
+
+In this analysis, as with the previous ones, counties are separated by whether they charged 
+for EM or not. Then, for each year, the total number of EM cases for each county is summed,
+and then the total number of petitions filed in each county. The total EM rate is then
+calculated, and plotted.
+
+This results in a sort of weighted mean, but instead of weighting by population, as with the first graph it's
+weighted by the number of petitions filed by each county.
+
+```{r}
+sumdata <- wide %>%
+  filter(!is.na(em) & !is.na(petitions)) %>%
+  group_by(charged_for_em_2017, year) %>%
+  summarise(em = sum(em, na.rm = T),
+            petitions = sum(petitions, na.rm = T),
+            n = n()) %>%
+  mutate(em_rate = em/petitions)
+
+ddplot(sumdata)
+```
+
+
+### Plotting all counties
+
+My thought with this one was that it could eventually become an interactive graphic.
+Each individual county would be displayed in either light grey (counties that didn't charge), 
+or dark grey (counties that did charge) and when you hover over a given line,
+it tells you what county it is. Then there would be two colored lines for the actual
+diff-in-diff calculation lines (so weighted average, unweighted averate, or whatever
+calculation you choose to do).
+
+Below is just a starting point. You'd probably have to do this using Shiny if you
+were to do it in R, and below only has each county, not the overall diff-in-diff lines.
+Obviously the colors are wrong too (and of course there is no interactivity).
+
+```{r}
+ggplot(data=wide, aes(x=year, y=em_rate, group=county)) +
+  geom_line(aes(color = charged_for_em_2017))+
+  # geom_point(aes(color = charged_for_em_2017)) +
+  geom_vline(xintercept = 2017.5) + 
+  annotate(geom="text", 
+           x=2016.5, y=0.75, color="red",
+           label="Before elimination \n of fees") + 
+  annotate(geom="text", 
+           x=2018.35, y=0.75, color="red",
+           label="After elimination \n of fees") +
+  theme_light() +
+  theme(panel.border = element_blank())
+```
+
+
+
+
+
+
+
+
+
+
+
